@@ -3,13 +3,15 @@
 ############################################################ IDENT(1)
 #
 # $Title: sysutils/zfs-stats [lite version] (fewer dependencies) $
+# $Copyright: 2026 Devin Teske. All rights reserved. $
+# $FrauBSD: zfs-stats-lite/zfs-stats 2026-09-23 12:49:25 -0700 Devin Teske $
 #
 ############################################################ LICENSE
 #
 # Copyright (c) 2008 Ben Rockwood (benr@cuddletech.com)
 # Copyright (c) 2010 Jason J. Hellenthal <jhell@dataix.net>,
 # Copyright (c) 2010 Martin Matuska <mm@FreeBSD.org>
-# Copyright (c) 2014-2016 Devin Teske <dteske@FreeBSD.org>
+# Copyright (c) 2014-2026 Devin Teske <dteske@FreeBSD.org>
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -50,7 +52,7 @@ FAILURE=1
 #
 # Version info
 #
-VERSION=1.4
+VERSION='$Version: 1.4.1 $'
 
 #
 # Options
@@ -479,8 +481,8 @@ while getopts aABDFhLMpsVZ flag; do
 	M) SHOW_MEMORY=1 ;;
 	p) SHOW_ZFS=1 ;;
 	s) SHOW_TUNABLES=1 ;;
-	V)
-		echo "${0##*/} version $VERSION"
+	V) VERSION="${VERSION#*: }"
+		echo "${0##*/} version ${VERSION% $}"
 		exit $SUCCESS
 		;;
 	Z) SHOW_DMU=1 ;;
@@ -1003,8 +1005,4 @@ f_hline
 
 ################################################################################
 # END
-################################################################################
-#
-# $Header: /cvsroot/druidbsd/pkgbase/freebsd/RELENG_8_3_AMD64/sysutils/zfs-stats-lite/src/bin/zfs-stats,v 1.21 2016/04/26 20:54:36 devinteske Exp $
-#
 ################################################################################

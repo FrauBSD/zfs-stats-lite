@@ -9,7 +9,7 @@
 # Copyright (c) 2008 Ben Rockwood (benr@cuddletech.com)
 # Copyright (c) 2010 Jason J. Hellenthal <jhell@dataix.net>,
 # Copyright (c) 2010 Martin Matuska <mm@FreeBSD.org>
-# Copyright (c) 2014 Devin Teske <dteske@FreeBSD.org>
+# Copyright (c) 2014-2015 Devin Teske <dteske@FreeBSD.org>
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -51,7 +51,7 @@ FAILURE=1
 #
 # Version info
 #
-VERSION=1.1
+VERSION=1.2
 
 #
 # Options
@@ -209,21 +209,40 @@ fi
 
 f_float()
 {
-	local OPTIND=1 OPTARG __flag __np=2 __n=1
-	while getopts n: __flag; do
-		case "$__flag" in n) __np="$OPTARG" ;; esac
+	local __funcname=f_float __np=2 __n=1
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		-n) shift 1 && __np="$1" ;;
+		-n?*) __np="${1#-n}" ;;
+		--) shift 1; break ;;
+		-[0-9]*) break ;;
+		-*) echo "$__funcname: Illegal option $1" >&2 ;;
+		*) break
+		esac
+		shift 1
 	done
-	shift $(( $OPTIND - 1 ))
 	local __remainder="${1:-0}" __divisor="${2:-1}" __var_to_set="$3"
-
 	[ "$__divisor" = / ] && __divisor="${3:-1}" __var_to_set="$4"
-	case "$__divisor" in *[!0-9]*) __divisor=1 ; esac
-	[ $__divisor -ne 0 ] || __divisor=1
-	local __quotient=$(( $__remainder / $__divisor ))
+
+	# Currently only whole integers allowed as input (trim floats)
+	__remainder="${__remainder%%[!-0-9]*}"
+	__divisor="${__divisor%%[!-0-9]*}"
+	: ${__remainder:=0} ${__divisor:=1}
+	[ $__divisor -ne 0 ] || __divisor=1 # Prevent division-by-zero
+
+	local __quotient=$(( $__remainder / $__divisor )) __floatnum
+	if [ $__quotient -eq 0 ]; then
+		if [ $__remainder -lt 0 -a $__divisor -ge 0 ] ||
+		   [ $__divisor -lt 0 -a $__remainder -ge 0 ]
+		then
+			__quotient="-$__quotient"
+		fi
+	fi
 	[ $__np -gt 0 ] && __quotient=$__quotient.
 	while [ $__n -le $__np ]; do
 		__remainder=$(( $__remainder % $__divisor * 10 ))
-		__quotient=$__quotient$(( $__remainder / $__divisor ))
+		__floatnum=$(( $__remainder / $__divisor ))
+		__quotient=$__quotient${__floatnum#-}
 		__n=$(( $__n + 1 ))
 	done
 	__remainder=$(( $__remainder % $__divisor * 10 ))
@@ -742,7 +761,7 @@ if [ "$SHOW_L2ARC" ]; then
 			printf "\t  Error Ratio:\t\t\t%0.2f%%\t%d\t[E]\n" \
 				$l2_writes_error_perc $l2_writes_error
 		else
-			printf "\t  Sent Total:\t\t\t%0.2f%\t%d\n" 100 \
+			printf "\t  Sent Total:\t\t\t%0.2f%%\t%d\n" 100 \
 				$l2_writes_sent
 		fi
 	fi
@@ -870,6 +889,6 @@ f_hline
 # END
 ################################################################################
 #
-# $Header: /cvsroot/druidbsd/pkgbase/freebsd/RELENG_8_3_AMD64/sysutils/zfs-stats-lite/src/bin/zfs-stats,v 1.2 2014/11/29 21:09:05 devinteske Exp $
+# $Header: /cvsroot/druidbsd/pkgbase/freebsd/RELENG_8_3_AMD64/sysutils/zfs-stats-lite/src/bin/zfs-stats,v 1.7 2015/09/14 18:17:51 devinteske Exp $
 #
 ################################################################################

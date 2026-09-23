@@ -1,5 +1,9 @@
 #!/bin/sh
 #-
+############################################################ IDENT(1)
+#
+# $Title: sysutils/zfs-stats [lite version] (fewer dependencies) $
+#
 ############################################################ LICENSE
 #
 # Copyright (c) 2008 Ben Rockwood (benr@cuddletech.com)
@@ -30,6 +34,12 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
+############################################################ INFORMATION
+#
+# Dependencies (all bundled with FreeBSD; listed in order of appearance):
+#
+# sh(1) sysctl(8) kldstat(8) vmstat(8) date(1) uname(1)
+#
 ############################################################ GLOBALS
 
 #
@@ -41,7 +51,7 @@ FAILURE=1
 #
 # Version info
 #
-VERSION=1.0
+VERSION=1.1
 
 #
 # Options
@@ -166,6 +176,94 @@ f_usage()
 	exit $FAILURE
 }
 
+f_hline()
+{
+    echo "$HR"
+}
+
+if ! type setvar > /dev/null 2>&1; then
+setvar()
+{
+	[ $# -gt 0 ] || return $SUCCESS
+	local __setvar_var_to_set="$1" __setvar_right="$2" __setvar_left=
+	case $# in
+	1) unset "$__setvar_var_to_set"
+	   return $? ;;
+	2) : fall through ;;
+	*) f_err "setvar: too many arguments\n"
+	   return $FAILURE
+	esac
+	case "$__setvar_var_to_set" in *[!0-9A-Za-z_]*)
+		f_err "setvar: %s: bad variable name\n" "$__setvar_var_to_set"
+		return 2
+	esac
+	while case "$__setvar_r" in *\'*) : ;; *) false ; esac
+	do
+		__setvar_left="$__setvar_left${__setvar_right%%\'*}'\\''"
+		__setvar_right="${__setvar_right#*\'}"
+	done
+	__setvar_left="$__setvar_left${__setvar_right#*\'}"
+	eval "$__setvar_var_to_set='$__setvar_left'"
+}
+fi
+
+f_float()
+{
+	local OPTIND=1 OPTARG __flag __np=2 __n=1
+	while getopts n: __flag; do
+		case "$__flag" in n) __np="$OPTARG" ;; esac
+	done
+	shift $(( $OPTIND - 1 ))
+	local __remainder="${1:-0}" __divisor="${2:-1}" __var_to_set="$3"
+
+	[ "$__divisor" = / ] && __divisor="${3:-1}" __var_to_set="$4"
+	case "$__divisor" in *[!0-9]*) __divisor=1 ; esac
+	[ $__divisor -ne 0 ] || __divisor=1
+	local __quotient=$(( $__remainder / $__divisor ))
+	[ $__np -gt 0 ] && __quotient=$__quotient.
+	while [ $__n -le $__np ]; do
+		__remainder=$(( $__remainder % $__divisor * 10 ))
+		__quotient=$__quotient$(( $__remainder / $__divisor ))
+		__n=$(( $__n + 1 ))
+	done
+	__remainder=$(( $__remainder % $__divisor * 10 ))
+	if [ $(( $__remainder / $__divisor )) -ge 5 ]; then # Round up
+		local __qi=${__quotient%%.*} __qd=${__quotient#*.}
+		local __il=${#__qi} __sub=
+		[ $__qi -gt 0 ] || __qi=-1
+		local __qe=$(( ${__qi#-}$__qd + 1 ))
+		[ $(( ${#__qe} + 1 )) -eq ${#__quotient} ] ||
+			__il=$(( $__il + 1 ))
+		__quotient=$__qe
+		while [ ${#__quotient} -gt $__il ]; do
+			__quotient="${__quotient%?}"
+		done
+		while [ $__il -gt 0 ]; do
+			__sub="$__sub?" __il=$(( $__il - 1 ))
+		done
+		__quotient="$__quotient.${__qe#$__sub}"
+		[ $__qi -gt 0 ] || __quotient=0${__quotient#1}
+	fi
+	if [ "$__var_to_set" ]; then
+		setvar "$__var_to_set" "$__quotient"
+	else
+		echo "$__quotient"
+	fi
+}
+
+f_perc()
+{
+	local OPTIND=1 OPTARG __flag __np=
+	while getopts n: __flag; do
+		case "$__flag" in n) __np="$OPTARG" ;; esac
+	done
+	shift $(( $OPTIND - 1 ))
+	local __dividend="${1:-0}"
+
+	shift 1 # __dividend
+	f_float ${__np:+-n "$__np"} "$(( $__dividend * 100 ))" "$@"
+}
+
 f_convert_bytes()
 {
 	local __bytes="${1:-0}" __var_to_set="$2"
@@ -177,63 +275,11 @@ f_convert_bytes()
 		fi
 		return $?
 	fi
-	__bytes=$( awk -v bytes="$__bytes" '
-		END{ printf "%.2fM\n", bytes / 1048576 }
-	' /dev/null )
+	f_float "$__bytes" / 1048576 __bytes
 	if [ "$__var_to_set" ]; then
-		setvar "$__var_to_set" "$__bytes"
+		setvar "$__var_to_set" "${__bytes}M"
 	else
-		echo "$__bytes"
-	fi
-}
-
-f_hline()
-{
-    echo "$HR"
-}
-
-f_sysctl2sh()
-{
-	local __var
-	for __var in $(
-		echo "$@" | awk '{gsub(/[^[:alnum:]_[:space:]]/, "_"); print}'
-	); do
-		setvar "$__var" ""
-	done
-	eval "$( sysctl -e "$@" | awk '
-	match($0, /=/) {
-		var = substr($0, 0, RSTART - 1)
-		value = substr($0, RSTART + 1)
-		gsub(/[^[:alnum:]_]/, "_", var)
-		gsub(/'\''/, "'\'\\\\\'\''", value)
-		print var "='\''" value "'\''"
-	}' )"
-}
-
-f_perc()
-{
-	local __default_format="%.2f"
-	local __dividend="${1:-0}" __divisor="${2:-1}" __var_to_set="$3"
-	local __format="${4:-$__default_format}" __quotient
-
-	if [ "$__divisor" = / ]; then
-		__divisor="$3" __var_to_set="$4"
-		__format="${5:-$__default_format}"
-	fi
-	__quotient=$( awk \
-		-v dividend="$__dividend" \
-		-v divisor="$__divisor" \
-		-v format="$__format" \
-		'END {
-			if (divisor ~ /[^[:digit:]]/ || !divisor)
-				divisor = 1
-			printf format, (dividend * 100) / divisor}
-		' /dev/null
-	)
-	if [ "$__var_to_set" ]; then
-		setvar "$__var_to_set" "$__quotient"
-	else
-		echo "$__quotient"
+		echo "${__bytes}M"
 	fi
 }
 
@@ -255,6 +301,23 @@ f_replaceall()
 	else
 		echo "$__left"
 	fi
+}
+
+f_sysctl2sh()
+{
+	local __var
+	for __var in $*; do
+		f_replaceall "$__var" "[^A-Za-z0-9_]" _ __var
+		setvar "$__var" ""
+	done
+	eval "$( sysctl -e $* | {
+		while read LINE; do
+			var="${LINE%%=*}" value="${LINE#*=}"
+			f_replaceall "$var" "[^A-Za-z0-9_]" _ var
+			f_replaceall "$value" "'" "'\\''" value
+			echo "$var='$value'"
+		done
+	} )"
 }
 
 ############################################################ MAIN
@@ -313,20 +376,23 @@ for mib in $SYSCTL_NUMERIC_MIBS; do
 	f_replaceall "$mib" "[^A-Za-z_]" _ _mib
 	eval : \${$_mib:=0}
 done
-ktext=$( kldstat | awk '
-	BEGIN { total = 0 }
-	NR > 1 { total += sprintf("%u", "0x" $4) }
-	END { print total }
-' )
-kdata=$( vmstat -m | awk '
-	BEGIN { total = 0 }
-	match($0, /[[:space:]][[:digit:]]+K/) {
-		m = substr($0, RSTART + 1, RLENGTH - 1)
-		if (sub(/K$/, "", m)) m = m * 1024
-		total += m
-	}
-	END { print total }
-' )
+ktext=$( kldstat | {
+	total=0
+	read HEADER
+	while read ID REFS ADDR SIZE NAME; do
+		total=$(( $total + 0x$SIZE ))
+	done
+	echo $total
+} )
+kdata=$( vmstat -m | {
+	total=0
+	read HEADER
+	while read LINE; do
+		LINE="${LINE%K*}"
+		total=$(( $total + ${LINE##* } * 1024 ))
+	done
+	echo $total
+} )
 kmem=$(( $ktext + $kdata ))
 f_perc $ktext / $kmem ktext_perc
 f_perc $kdata / $kmem kdata_perc
@@ -343,11 +409,14 @@ if [ "$SHOW_FREEBSD" ]; then
 	f_hline
 	echo System Information:
 	echo
+	: ${UNAME_m:=$( uname -m )}
+	: ${UNAME_p:=$( uname -p )}
+	: ${UNAME_v:=$( uname -v )}
 	printf "\tKernel Version:\t\t\t\t%d (osreldate)\n" $kern_osreldate
-	printf "\tHardware Platform:\t\t\t%s\n" "$( uname -m )"
-	printf "\tProcessor Architecture:\t\t\t%s\n" "$( uname -p )"
+	printf "\tHardware Platform:\t\t\t%s\n" "$UNAME_m"
+	printf "\tProcessor Architecture:\t\t\t%s\n" "$UNAME_p"
 	echo
-	uname -v | awk '{sub(/@.*/,""); print}'
+	echo "${UNAME_v%%@*}"
 	uptime
 fi
 
@@ -785,7 +854,11 @@ if [ "$SHOW_TUNABLES" ]; then
 		vm.kmem_size_scale	\
 		vm.kmem_size_min	\
 		vm.kmem_size_max	\
-	| awk '{print "\t" $0}'
+	| {
+		while read LINE; do
+			printf "\t%s\n" "$LINE"
+		done
+	}
 fi
 
 #
@@ -797,6 +870,6 @@ f_hline
 # END
 ################################################################################
 #
-# $Header: /cvsroot/druidbsd/pkgbase/freebsd/RELENG_8_3_AMD64/sysutils/zfs-stats-lite/src/bin/zfs-stats,v 1.1 2014/11/12 22:42:15 devinteske Exp $
+# $Header: /cvsroot/druidbsd/pkgbase/freebsd/RELENG_8_3_AMD64/sysutils/zfs-stats-lite/src/bin/zfs-stats,v 1.2 2014/11/29 21:09:05 devinteske Exp $
 #
 ################################################################################

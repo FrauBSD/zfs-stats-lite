@@ -272,11 +272,18 @@ f_float()
 
 f_perc()
 {
-	local OPTIND=1 OPTARG __flag __np=
-	while getopts n: __flag; do
-		case "$__flag" in n) __np="$OPTARG" ;; esac
+	local __funcname=f_perc __np=
+	while [ $# -gt 0 ]; do
+		case "$1" in
+		-n) shift 1 && __np="$1" ;;
+		-n?*) __np="${1#-n}" ;;
+		--) shift 1; break ;;
+		-[0-9]*) break ;;
+		-*) echo "$__funcname: Illegal option $1" >&2 ;;
+		*) break
+		esac
+		shift 1
 	done
-	shift $(( $OPTIND - 1 ))
 	local __dividend="${1:-0}"
 
 	shift 1 # __dividend
@@ -889,6 +896,6 @@ f_hline
 # END
 ################################################################################
 #
-# $Header: /cvsroot/druidbsd/pkgbase/freebsd/RELENG_8_3_AMD64/sysutils/zfs-stats-lite/src/bin/zfs-stats,v 1.7 2015/09/14 18:17:51 devinteske Exp $
+# $Header: /cvsroot/druidbsd/pkgbase/freebsd/RELENG_8_3_AMD64/sysutils/zfs-stats-lite/src/bin/zfs-stats,v 1.8 2015/09/14 18:27:21 devinteske Exp $
 #
 ################################################################################

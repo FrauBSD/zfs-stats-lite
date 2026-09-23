@@ -4,7 +4,7 @@
 #
 # $Title: sysutils/zfs-stats [lite version] (fewer dependencies) $
 # $Copyright: 2026 Devin Teske. All rights reserved. $
-# $FrauBSD: zfs-stats-lite/zfs-stats 2026-09-23 12:49:25 -0700 Devin Teske $
+# $FrauBSD: zfs-stats-lite/zfs-stats 2026-09-23 12:53:00 -0700 Devin Teske $
 #
 ############################################################ LICENSE
 #
@@ -52,7 +52,7 @@ FAILURE=1
 #
 # Version info
 #
-VERSION='$Version: 1.4.1 $'
+VERSION='$Version: 1.5 $'
 
 #
 # Options
@@ -115,9 +115,11 @@ SYSCTL_NUMERIC_MIBS="
 	kstat.zfs.misc.arcstats.memory_throttle_count
 	kstat.zfs.misc.arcstats.mfu_ghost_hits
 	kstat.zfs.misc.arcstats.mfu_hits
+	kstat.zfs.misc.arcstats.mfu_size
 	kstat.zfs.misc.arcstats.misses
 	kstat.zfs.misc.arcstats.mru_ghost_hits
 	kstat.zfs.misc.arcstats.mru_hits
+	kstat.zfs.misc.arcstats.mru_size
 	kstat.zfs.misc.arcstats.mutex_miss
 	kstat.zfs.misc.arcstats.p
 	kstat.zfs.misc.arcstats.prefetch_data_hits
@@ -447,7 +449,10 @@ f_sysctl2sh()
 		f_replaceall "$__var" "[^A-Za-z0-9_]" _ __var
 		setvar "$__var" ""
 	done
-	eval "$( sysctl -e $* | {
+	eval "$(
+		for __var in $*; do
+			sysctl -e "$__var" 2> /dev/null || : unknown oid
+		done | {
 		while read LINE; do
 			var="${LINE%%=*}" value="${LINE#*=}"
 			f_replaceall "$var" "[^A-Za-z0-9_]" _ var
@@ -524,10 +529,37 @@ ktext=$( kldstat | {
 kdata=$( vmstat -m | {
 	total=0
 	read HEADER
-	while read LINE; do
-		LINE="${LINE%K*}"
-		total=$(( $total + ${LINE##* } * 1024 ))
-	done
+	case "$HEADER" in
+	*MemUse*)
+		while read LINE; do
+			LINE="${LINE%K*}"
+			total=$(( $total + ${LINE##* } * 1024 ))
+		done
+		;;
+	*)
+		# FreeBSD 14: Memory is bytes. Size(s) is last, or
+		# absent when the line ends in whitespace
+		set -f
+		while IFS= read -r LINE; do
+			case "$LINE" in
+			*[![:space:]]) from_end=3 ;;
+			*) from_end=2 ;;
+			esac
+			set -- $LINE
+			[ $# -ge $from_end ] || continue
+			i=$(( $# - $from_end + 1 ))
+			while [ $i -gt 1 ]; do
+				shift
+				i=$(( $i - 1 ))
+			done
+			[ "$1" ] || continue
+			case "$1" in
+			*[!0-9]*) continue ;;
+			esac
+			total=$(( $total + $1 ))
+		done
+		;;
+	esac
 	echo $total
 } )
 kmem=$(( $ktext + $kdata ))
@@ -611,6 +643,12 @@ if [ "$SHOW_ARC" ]; then
 	target_min_size=$kstat_zfs_misc_arcstats_c_min
 	    target_size=$kstat_zfs_misc_arcstats_c
 
+	# arcstats.p left with the adaptive ARC rewrite (FreeBSD 14)
+	if ! sysctl -N kstat.zfs.misc.arcstats.p > /dev/null 2>&1; then
+		mru_size=$kstat_zfs_misc_arcstats_mru_size
+		mfu_size=$kstat_zfs_misc_arcstats_mfu_size
+	fi
+
 	target_size_ratio=$(( $target_max_size / $target_min_size ))
 	f_perc $target_size / $target_max_size target_size_perc
 	f_perc $target_min_size / $target_max_size target_size_min_perc
@@ -632,7 +670,17 @@ if [ "$SHOW_ARC" ]; then
 
 	echo
 	echo ARC Size Breakdown:
-	if [ $arc_size -gt $target_size ]; then
+	if [ "$mfu_size" ]; then
+		f_convert_bytes $mfu_size _mfu_size
+		f_convert_bytes $mru_size _mru_size
+		f_perc $mfu_size / $arc_size mfu_perc
+		f_perc $mru_size / $arc_size mru_perc
+		printf "\tRecently Used Cache Size (mru):\t%0.2f%%\t%s\n" \
+			$mru_perc $_mru_size
+		printf "\tFrequently Used Cache Size (mfu):\t%0.2f%%\t%s\n" \
+			$mfu_perc $_mfu_size
+	fi
+	if [ ! "$mfu_size" -a $arc_size -gt $target_size ]; then
 		mfu_size=$(( $arc_size - $mru_size ))
 		f_convert_bytes $mfu_size _mfu_size
 		f_convert_bytes $mru_size _mru_size
@@ -645,7 +693,7 @@ if [ "$SHOW_ARC" ]; then
 		   $mfu_perc $_mfu_size
 	fi
 
-	if [ $arc_size -lt $target_size ]; then
+	if [ ! "$mfu_size" -a $arc_size -lt $target_size ]; then
 		mfu_size=$(( $target_size - $mru_size ))
 		f_convert_bytes $mfu_size _mfu_size
 		f_convert_bytes $mru_size _mru_size
@@ -888,7 +936,9 @@ fi
 #
 # Process -D argument (`D' for `Device(s)')
 #
-if [ "$SHOW_VDEV" ]; then
+if [ "$SHOW_VDEV" ] &&
+   sysctl -N kstat.zfs.misc.vdev_cache_stats.hits > /dev/null 2>&1
+then
 	### VDEV Cache Stats ###
 	vdev_cache_delegations=$kstat_zfs_misc_vdev_cache_stats_delegations
 	       vdev_cache_hits=$kstat_zfs_misc_vdev_cache_stats_hits
@@ -927,22 +977,38 @@ if [ "$SHOW_DMU" ]; then
 	     zfetch_stride_miss=$kstat_zfs_misc_zfetchstats_stride_misses
 
 	zfetch_access_total=$(( $zfetch_hits + $zfetch_miss ))
-	zfetch_colinear_total=$((
-		$zfetch_colinear_hits + $zfetch_colinear_miss
-	))
-	zfetch_stride_total=$(( $zfetch_stride_hits + $zfetch_stride_miss ))
+	zfetch_colinear=
+	zfetch_stride=
+	if sysctl -N kstat.zfs.misc.zfetchstats.colinear_hits > /dev/null 2>&1
+	then
+		zfetch_colinear=1
+		zfetch_colinear_total=$((
+			$zfetch_colinear_hits + $zfetch_colinear_miss
+		))
+	fi
+	if sysctl -N kstat.zfs.misc.zfetchstats.stride_hits > /dev/null 2>&1
+	then
+		zfetch_stride=1
+		zfetch_stride_total=$((
+			$zfetch_stride_hits + $zfetch_stride_miss
+		))
+	fi
 
 	if [ $zfetch_access_total -gt 0 ]; then
 		f_perc $zfetch_hits / $zfetch_access_total zfetch_hits_perc
 		f_perc $zfetch_miss / $zfetch_access_total zfetch_miss_perc
-		f_perc $zfetch_colinear_hits / $zfetch_colinear_total \
-			zfetch_colinear_hits_perc
-		f_perc $zfetch_colinear_miss / $zfetch_colinear_total \
-			zfetch_colinear_miss_perc
-		f_perc $zfetch_stride_hits / $zfetch_stride_total \
-			zfetch_stride_hits_perc
-		f_perc $zfetch_stride_miss / $zfetch_stride_total \
-			zfetch_stride_miss_perc
+		if [ "$zfetch_colinear" ]; then
+			f_perc $zfetch_colinear_hits / $zfetch_colinear_total \
+				zfetch_colinear_hits_perc
+			f_perc $zfetch_colinear_miss / $zfetch_colinear_total \
+				zfetch_colinear_miss_perc
+		fi
+		if [ "$zfetch_stride" ]; then
+			f_perc $zfetch_stride_hits / $zfetch_stride_total \
+				zfetch_stride_hits_perc
+			f_perc $zfetch_stride_miss / $zfetch_stride_total \
+				zfetch_stride_miss_perc
+		fi
 
 		f_hline
 		echo "File-Level Prefetch Stats (DMU):"
@@ -953,27 +1019,39 @@ if [ "$SHOW_DMU" ]; then
 			$zfetch_hits_perc $zfetch_hits
 		printf "\tMiss Ratio:\t\t\t%0.2f%%\t%d\n" \
 			$zfetch_miss_perc $zfetch_miss
-		echo
-		printf "\tColinear Access Total:\t\t\t%d\n" \
-			$zfetch_colinear_total
-		printf "\tColinear Hit Ratio:\t\t%0.2f%%\t%d\n" \
-			$zfetch_colinear_hits_perc $zfetch_colinear_hits
-		printf "\tColinear Miss Ratio:\t\t%0.2f%%\t%d\n" \
-			$zfetch_colinear_miss_perc $zfetch_colinear_miss
-		echo
-		printf "\tStride Access Total:\t\t\t%d\n" $zfetch_stride_total
-		printf "\tStride Hit Ratio:\t\t%0.2f%%\t%d\n" \
-			$zfetch_stride_hits_perc $zfetch_stride_hits
-		printf "\tStride Miss Ratio:\t\t%0.2f%%\t%d\n" \
-			$zfetch_stride_miss_perc $zfetch_stride_miss
-		echo
-
-		echo DMU misc:
-		printf "\tReclaim successes:\t\t\t%d\n" $zfetch_reclaim_success
-		printf "\tReclaim failures:\t\t\t%d\n" $zfetch_reclaim_failure
-		printf "\tStream resets:\t\t\t\t%d\n" $zfetch_streams_resets
-		printf "\tStream noresets:\t\t\t%d\n" $zfetch_streams_noresets
-		printf "\tBogus streams:\t\t\t\t%d\n" $zfetch_bogus_streams
+		if [ "$zfetch_colinear" ]; then
+			echo
+			printf "\tColinear Access Total:\t\t\t%d\n" \
+				$zfetch_colinear_total
+			printf "\tColinear Hit Ratio:\t\t%0.2f%%\t%d\n" \
+				$zfetch_colinear_hits_perc $zfetch_colinear_hits
+			printf "\tColinear Miss Ratio:\t\t%0.2f%%\t%d\n" \
+				$zfetch_colinear_miss_perc $zfetch_colinear_miss
+		fi
+		if [ "$zfetch_stride" ]; then
+			echo
+			printf "\tStride Access Total:\t\t\t%d\n" \
+				$zfetch_stride_total
+			printf "\tStride Hit Ratio:\t\t%0.2f%%\t%d\n" \
+				$zfetch_stride_hits_perc $zfetch_stride_hits
+			printf "\tStride Miss Ratio:\t\t%0.2f%%\t%d\n" \
+				$zfetch_stride_miss_perc $zfetch_stride_miss
+		fi
+		if sysctl -N kstat.zfs.misc.zfetchstats.bogus_streams > /dev/null 2>&1
+		then
+			echo
+			echo DMU misc:
+			printf "\tReclaim successes:\t\t\t%d\n" \
+				$zfetch_reclaim_success
+			printf "\tReclaim failures:\t\t\t%d\n" \
+				$zfetch_reclaim_failure
+			printf "\tStream resets:\t\t\t\t%d\n" \
+				$zfetch_streams_resets
+			printf "\tStream noresets:\t\t\t%d\n" \
+				$zfetch_streams_noresets
+			printf "\tBogus streams:\t\t\t\t%d\n" \
+				$zfetch_bogus_streams
+		fi
 	fi
 fi
 

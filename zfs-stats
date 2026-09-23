@@ -9,23 +9,22 @@
 # Copyright (c) 2008 Ben Rockwood (benr@cuddletech.com)
 # Copyright (c) 2010 Jason J. Hellenthal <jhell@dataix.net>,
 # Copyright (c) 2010 Martin Matuska <mm@FreeBSD.org>
-# Copyright (c) 2014-2015 Devin Teske <dteske@FreeBSD.org>
+# Copyright (c) 2014-2016 Devin Teske <dteske@FreeBSD.org>
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
 # modification, are permitted provided that the following conditions
 # are met:
-#
 # 1. Redistributions of source code must retain the above copyright
 #    notice, this list of conditions and the following disclaimer.
 # 2. Redistributions in binary form must reproduce the above copyright
 #    notice, this list of conditions and the following disclaimer in the
 #    documentation and/or other materials provided with the distribution.
 #
-# THIS SOFTWARE IS PROVIDED BY AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
 # ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
 # IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
-# ARE DISCLAIMED.  IN NO EVENT SHALL AUTHOR OR CONTRIBUTORS BE LIABLE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
 # FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
 # DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
 # OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
@@ -51,7 +50,7 @@ FAILURE=1
 #
 # Version info
 #
-VERSION=1.2
+VERSION=1.4
 
 #
 # Options
@@ -148,6 +147,22 @@ SYSCTL_NUMERIC_MIBS="
 #
 HR="------------------------------------------------------------------------"
 
+#
+# Decimal point (locale specific)
+#
+FLOAT_DECIMAL_POINT=$(
+	export LC_ALL LC_NUMERIC
+	locale -k decimal_point 2> /dev/null
+)
+case "$FLOAT_DECIMAL_POINT" in
+*=\"?\")
+	FLOAT_DECIMAL_POINT="${FLOAT_DECIMAL_POINT##*=?}"
+	FLOAT_DECIMAL_POINT="${FLOAT_DECIMAL_POINT%?}" ;;
+*)
+	FLOAT_DECIMAL_POINT=
+esac
+: ${FLOAT_DECIMAL_POINT:=.} # Use C locale default as fall-back
+
 ############################################################ FUNCTIONS
 
 f_usage()
@@ -207,16 +222,87 @@ setvar()
 }
 fi
 
-f_float()
+# f_float_round_up float [var_to_set]
+#
+# Round float up by one.
+#
+f_float_round_up()
 {
-	local __funcname=f_float __np=2 __n=1
+	local __float="$1" __var_to_set="$2"
+	local __fi __fd __fl __ii=1 __overflow=
+	case "$__float" in
+	*$FLOAT_DECIMAL_POINT*)
+		__fi=${__float%%$FLOAT_DECIMAL_POINT*}
+		__fd=${__float#*$FLOAT_DECIMAL_POINT}
+		__fl=${#__fd}
+		;;
+	*)
+		__fi=$__float
+		__fd=
+	esac
+	if [ "$__fd" ]; then
+		local __lpad=0
+		while [ "$__fd" != "${__fd#0}" ]; do
+			__lpad=$(( $__lpad + 1 ))
+			__fl=$(( $__fl - 1 ))
+			__fd=${__fd#0}
+		done
+		: ${__fd:=0}
+		__fd=$(( $__fd + 1 ))
+		if [ $__fd -lt 0 ]; then
+			__overflow=1
+		else
+			[ ${#__fd} -ne $__fl ] || __ii=
+			while [ $__lpad -gt 0 ]; do
+				__fd=0$__fd
+				__lpad=$(( $__lpad - 1 ))
+			done
+		fi
+	fi
+	if [ "$__ii" -a ! "$__overflow" ]; then
+		__fd=${__fd#1}
+		if [ "$__fi" = "${__fi#-}" ]; then
+			__fi=$(( $__fi + 1 ))
+			[ $__fi -gt 0 ] || __overflow=1
+		else
+			__fi=$(( $__fi - 1 ))
+			[ $__fi -lt 0 ] || __overflow=1
+		fi
+	fi
+	if [ "$__overflow" ]; then
+		echo "$__funcname: floating point conversion overflow" \
+		     "(unable to round)" >&2
+		return $FAILURE
+	fi
+	__float="$__fi${__fd:+$FLOAT_DECIMAL_POINT}$__fd"
+	if [ "$__var_to_set" ]; then
+		setvar "$__var_to_set" "$__float"
+	else
+		echo "$__float"
+	fi
+}
+
+# f_float_divide [-r] [-n precision] [--] integer [/] divisor [var_to_set]
+#
+# Divide integer by divisor, producing a floating-point number with precision
+# decimal places. If the `-r' flag is given, round up to the nearest tenth.
+#
+# If $var_to_set is missing or NULL, output is to standard out.
+#
+f_float_divide()
+{
+	local __funcname=f_float_divide __np=2 __n=1 __round=
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		-n) shift 1 && __np="$1" ;;
 		-n?*) __np="${1#-n}" ;;
+		-r) __round=1 ;;
+		-rn) __round=1; shift 1 && __np="$1" ;;
+		-rn?*) __round=1; __np="${1#-rn}" ;;
 		--) shift 1; break ;;
 		-[0-9]*) break ;;
-		-*) echo "$__funcname: Illegal option $1" >&2 ;;
+		-*) echo "$__funcname: Illegal option $1" >&2
+		    return $FAILURE ;;
 		*) break
 		esac
 		shift 1
@@ -224,12 +310,33 @@ f_float()
 	local __remainder="${1:-0}" __divisor="${2:-1}" __var_to_set="$3"
 	[ "$__divisor" = / ] && __divisor="${3:-1}" __var_to_set="$4"
 
+	#
 	# Currently only whole integers allowed as input (trim floats)
+	#
 	__remainder="${__remainder%%[!-0-9]*}"
 	__divisor="${__divisor%%[!-0-9]*}"
 	: ${__remainder:=0} ${__divisor:=1}
-	[ $__divisor -ne 0 ] || __divisor=1 # Prevent division-by-zero
+	if [ $__remainder -eq 0 ] 2> /dev/null; then
+		: simply testing for integer overflow
+	elif [ $? -eq 2 ]; then
+		echo "$__funcname: $__remainder: out of range" >&2
+		[ "$__var_to_set" ] && setvar "$__var_to_set" ""
+		return $FAILURE
+	fi
+	if [ $__divisor -eq 0 ] 2> /dev/null; then
+		echo "$__funcname: $__remainder / $__divisor:" \
+		     "division by 0" >&2
+		[ "$__var_to_set" ] && setvar "$__var_to_set" ""
+		return $FAILURE
+	elif [ $? -eq 2 ]; then
+		echo "$__funcname: $__divisor: out of range" >&2
+		[ "$__var_to_set" ] && setvar "$__var_to_set" ""
+		return $FAILURE
+	fi
 
+	#
+	# Perform floating-point calculation
+	#
 	local __quotient=$(( $__remainder / $__divisor )) __floatnum
 	if [ $__quotient -eq 0 ]; then
 		if [ $__remainder -lt 0 -a $__divisor -ge 0 ] ||
@@ -238,31 +345,29 @@ f_float()
 			__quotient="-$__quotient"
 		fi
 	fi
-	[ $__np -gt 0 ] && __quotient=$__quotient.
+	[ $__np -gt 0 ] && __quotient=$__quotient$FLOAT_DECIMAL_POINT
 	while [ $__n -le $__np ]; do
 		__remainder=$(( $__remainder % $__divisor * 10 ))
 		__floatnum=$(( $__remainder / $__divisor ))
 		__quotient=$__quotient${__floatnum#-}
 		__n=$(( $__n + 1 ))
 	done
-	__remainder=$(( $__remainder % $__divisor * 10 ))
-	if [ $(( $__remainder / $__divisor )) -ge 5 ]; then # Round up
-		local __qi=${__quotient%%.*} __qd=${__quotient#*.}
-		local __il=${#__qi} __sub=
-		[ $__qi -gt 0 ] || __qi=-1
-		local __qe=$(( ${__qi#-}$__qd + 1 ))
-		[ $(( ${#__qe} + 1 )) -eq ${#__quotient} ] ||
-			__il=$(( $__il + 1 ))
-		__quotient=$__qe
-		while [ ${#__quotient} -gt $__il ]; do
-			__quotient="${__quotient%?}"
-		done
-		while [ $__il -gt 0 ]; do
-			__sub="$__sub?" __il=$(( $__il - 1 ))
-		done
-		__quotient="$__quotient.${__qe#$__sub}"
-		[ $__qi -gt 0 ] || __quotient=0${__quotient#1}
+
+	#
+	# Round up if necessary
+	#
+	if [ "$__round" ]; then
+		__remainder=$(( $__remainder % $__divisor * 10 ))
+		if [ $(( $__remainder / $__divisor )) -ge 5 ]; then
+			local __f_float_divide_float
+			f_float_round_up $__quotient __f_float_divide_float &&
+				__quotient="$__f_float_divide_float"
+		fi
 	fi
+
+	#
+	# Return result
+	#
 	if [ "$__var_to_set" ]; then
 		setvar "$__var_to_set" "$__quotient"
 	else
@@ -272,14 +377,18 @@ f_float()
 
 f_perc()
 {
-	local __funcname=f_perc __np=
+	local __funcname=f_perc __np= __round=
 	while [ $# -gt 0 ]; do
 		case "$1" in
 		-n) shift 1 && __np="$1" ;;
 		-n?*) __np="${1#-n}" ;;
+		-r) __round=1 ;;
+		-rn) __round=1; shift 1 && __np="$1" ;;
+		-rn?*) __round=1; __np="${1#-rn}" ;;
 		--) shift 1; break ;;
 		-[0-9]*) break ;;
-		-*) echo "$__funcname: Illegal option $1" >&2 ;;
+		-*) echo "$__funcname: Illegal option $1" >&2
+		    return $FAILURE ;;
 		*) break
 		esac
 		shift 1
@@ -287,7 +396,7 @@ f_perc()
 	local __dividend="${1:-0}"
 
 	shift 1 # __dividend
-	f_float ${__np:+-n "$__np"} "$(( $__dividend * 100 ))" "$@"
+	f_float_divide ${__np:+-n "$__np"} "$(( $__dividend * 100 ))" "$@"
 }
 
 f_convert_bytes()
@@ -301,7 +410,7 @@ f_convert_bytes()
 		fi
 		return $?
 	fi
-	f_float "$__bytes" / 1048576 __bytes
+	f_float_divide "$__bytes" / 1048576 __bytes
 	if [ "$__var_to_set" ]; then
 		setvar "$__var_to_set" "${__bytes}M"
 	else
@@ -896,6 +1005,6 @@ f_hline
 # END
 ################################################################################
 #
-# $Header: /cvsroot/druidbsd/pkgbase/freebsd/RELENG_8_3_AMD64/sysutils/zfs-stats-lite/src/bin/zfs-stats,v 1.8 2015/09/14 18:27:21 devinteske Exp $
+# $Header: /cvsroot/druidbsd/pkgbase/freebsd/RELENG_8_3_AMD64/sysutils/zfs-stats-lite/src/bin/zfs-stats,v 1.21 2016/04/26 20:54:36 devinteske Exp $
 #
 ################################################################################

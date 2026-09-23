@@ -1,0 +1,802 @@
+#!/bin/sh
+#-
+############################################################ LICENSE
+#
+# Copyright (c) 2008 Ben Rockwood (benr@cuddletech.com)
+# Copyright (c) 2010 Jason J. Hellenthal <jhell@dataix.net>,
+# Copyright (c) 2010 Martin Matuska <mm@FreeBSD.org>
+# Copyright (c) 2014 Devin Teske <dteske@FreeBSD.org>
+# All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+#
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL AUTHOR OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+#
+############################################################ GLOBALS
+
+#
+# Global exit status
+#
+SUCCESS=0
+FAILURE=1
+
+#
+# Version info
+#
+VERSION=1.0
+
+#
+# Options
+#
+SHOW_ARC=	# -A or -a
+SHOW_BYTES=	# -B
+SHOW_DMU=	# -Z or -a
+SHOW_FREEBSD=	# -F or -a
+SHOW_L2ARC=	# -L or -a
+SHOW_MEMORY=	# -M or -a
+SHOW_TUNABLES=	# -s or -a (`s' for `sysctl')
+SHOW_VDEV=	# -D or -a (`D' for `Device(s)')
+SHOW_ZFS=	# -p or -a (`p' for `pool')
+
+#
+# sysctl(8) MIBs to load into sh(1) namespace (sorted alphabetically)
+#
+# NB: These are expected to all produce numeric values (we fix the values
+#     to zero if NULL after calling sysctl(8) to populate sh(1) namespace).
+#
+SYSCTL_NUMERIC_MIBS="
+	hw.physmem
+	kern.osreldate
+	kstat.zfs.misc.arcstats.c
+	kstat.zfs.misc.arcstats.c_min
+	kstat.zfs.misc.arcstats.c_max
+	kstat.zfs.misc.arcstats.deleted
+	kstat.zfs.misc.arcstats.demand_data_hits
+	kstat.zfs.misc.arcstats.demand_data_misses
+	kstat.zfs.misc.arcstats.demand_metadata_hits
+	kstat.zfs.misc.arcstats.demand_metadata_misses
+	kstat.zfs.misc.arcstats.evict_l2_cached
+	kstat.zfs.misc.arcstats.evict_l2_eligible
+	kstat.zfs.misc.arcstats.evict_l2_ineligible
+	kstat.zfs.misc.arcstats.evict_skip
+	kstat.zfs.misc.arcstats.hash_chains
+	kstat.zfs.misc.arcstats.hash_chain_max
+	kstat.zfs.misc.arcstats.hash_collisions
+	kstat.zfs.misc.arcstats.hash_elements
+	kstat.zfs.misc.arcstats.hash_elements_max
+	kstat.zfs.misc.arcstats.hits
+	kstat.zfs.misc.arcstats.l2_abort_lowmem
+	kstat.zfs.misc.arcstats.l2_cksum_bad
+	kstat.zfs.misc.arcstats.l2_evict_lock_retry
+	kstat.zfs.misc.arcstats.l2_evict_reading
+	kstat.zfs.misc.arcstats.l2_feeds
+	kstat.zfs.misc.arcstats.l2_free_on_write
+	kstat.zfs.misc.arcstats.l2_hdr_size
+	kstat.zfs.misc.arcstats.l2_hits
+	kstat.zfs.misc.arcstats.l2_io_error
+	kstat.zfs.misc.arcstats.l2_misses
+	kstat.zfs.misc.arcstats.l2_read_bytes
+	kstat.zfs.misc.arcstats.l2_rw_clash
+	kstat.zfs.misc.arcstats.l2_size
+	kstat.zfs.misc.arcstats.l2_write_bytes
+	kstat.zfs.misc.arcstats.l2_writes_done
+	kstat.zfs.misc.arcstats.l2_writes_error
+	kstat.zfs.misc.arcstats.l2_writes_hdr_miss
+	kstat.zfs.misc.arcstats.l2_writes_sent
+	kstat.zfs.misc.arcstats.memory_throttle_count
+	kstat.zfs.misc.arcstats.mfu_ghost_hits
+	kstat.zfs.misc.arcstats.mfu_hits
+	kstat.zfs.misc.arcstats.misses
+	kstat.zfs.misc.arcstats.mru_ghost_hits
+	kstat.zfs.misc.arcstats.mru_hits
+	kstat.zfs.misc.arcstats.mutex_miss
+	kstat.zfs.misc.arcstats.p
+	kstat.zfs.misc.arcstats.prefetch_data_hits
+	kstat.zfs.misc.arcstats.prefetch_data_misses
+	kstat.zfs.misc.arcstats.prefetch_metadata_hits
+	kstat.zfs.misc.arcstats.prefetch_metadata_misses
+	kstat.zfs.misc.arcstats.recycle_miss
+	kstat.zfs.misc.arcstats.size
+	kstat.zfs.misc.vdev_cache_stats.delegations
+	kstat.zfs.misc.vdev_cache_stats.hits
+	kstat.zfs.misc.vdev_cache_stats.misses
+	kstat.zfs.misc.zfetchstats.bogus_streams
+	kstat.zfs.misc.zfetchstats.colinear_hits
+	kstat.zfs.misc.zfetchstats.colinear_misses
+	kstat.zfs.misc.zfetchstats.hits
+	kstat.zfs.misc.zfetchstats.misses
+	kstat.zfs.misc.zfetchstats.reclaim_failures
+	kstat.zfs.misc.zfetchstats.reclaim_successes
+	kstat.zfs.misc.zfetchstats.streams_noresets
+	kstat.zfs.misc.zfetchstats.streams_resets
+	kstat.zfs.misc.zfetchstats.stride_hits
+	kstat.zfs.misc.zfetchstats.stride_misses
+	vfs.zfs.version.zpl
+	vfs.zfs.version.spa
+" # END-QUOTE
+
+#
+# Horizontal-Rule
+#
+HR="------------------------------------------------------------------------"
+
+############################################################ FUNCTIONS
+
+f_usage()
+{
+	local optfmt="%s\t: %s\n"
+	printf "Usage: %s [-aABDFhLMpsVZ]\n" "$0" >&2
+	printf "\n" >&2
+	printf "$optfmt" -F "FreeBSD version information" >&2
+	printf "$optfmt" -M "system memory information" >&2
+	printf "$optfmt" -p "ZFS pool and filesystem version" >&2
+	printf "$optfmt" -s "sysctl ZFS tunables" >&2
+	printf "\n" >&2
+	printf "$optfmt" -A "ARC statistics" >&2
+	printf "$optfmt" -D "VDEV cache statistics" >&2
+	printf "$optfmt" -L "L2 ARC statistics" >&2
+	printf "$optfmt" -Z "DMU (zfetch) statistics" >&2
+	printf "\n" >&2
+	printf "$optfmt" -a "all statistics (-ADFLMpsZ)" >&2
+	printf "\n" >&2
+	printf "$optfmt" -B \
+		"do not display bytes as megabytes (display raw bytes)" >&2
+	printf "$optfmt" -V "display program version and exit" >&2
+	printf "$optfmt" -h "display this (help) message" >&2
+	printf "\n" >&2
+	printf "example: %s -a\n" "$0" >&2
+	exit $FAILURE
+}
+
+f_convert_bytes()
+{
+	local __bytes="${1:-0}" __var_to_set="$2"
+	if [ "$SHOW_BYTES" ]; then
+		if [ "$__var_to_set" ]; then
+			setvar "$__var_to_set" "$__bytes"
+		else
+			echo "$__bytes"
+		fi
+		return $?
+	fi
+	__bytes=$( awk -v bytes="$__bytes" '
+		END{ printf "%.2fM\n", bytes / 1048576 }
+	' /dev/null )
+	if [ "$__var_to_set" ]; then
+		setvar "$__var_to_set" "$__bytes"
+	else
+		echo "$__bytes"
+	fi
+}
+
+f_hline()
+{
+    echo "$HR"
+}
+
+f_sysctl2sh()
+{
+	local __var
+	for __var in $(
+		echo "$@" | awk '{gsub(/[^[:alnum:]_[:space:]]/, "_"); print}'
+	); do
+		setvar "$__var" ""
+	done
+	eval "$( sysctl -e "$@" | awk '
+	match($0, /=/) {
+		var = substr($0, 0, RSTART - 1)
+		value = substr($0, RSTART + 1)
+		gsub(/[^[:alnum:]_]/, "_", var)
+		gsub(/'\''/, "'\'\\\\\'\''", value)
+		print var "='\''" value "'\''"
+	}' )"
+}
+
+f_perc()
+{
+	local __default_format="%.2f"
+	local __dividend="${1:-0}" __divisor="${2:-1}" __var_to_set="$3"
+	local __format="${4:-$__default_format}" __quotient
+
+	if [ "$__divisor" = / ]; then
+		__divisor="$3" __var_to_set="$4"
+		__format="${5:-$__default_format}"
+	fi
+	__quotient=$( awk \
+		-v dividend="$__dividend" \
+		-v divisor="$__divisor" \
+		-v format="$__format" \
+		'END {
+			if (divisor ~ /[^[:digit:]]/ || !divisor)
+				divisor = 1
+			printf format, (dividend * 100) / divisor}
+		' /dev/null
+	)
+	if [ "$__var_to_set" ]; then
+		setvar "$__var_to_set" "$__quotient"
+	else
+		echo "$__quotient"
+	fi
+}
+
+f_replaceall()
+{
+	local __left="" __right="$1"
+	local __find="$2" __replace="$3" __var_to_set="$4"
+	while :; do
+		case "$__right" in *$__find*)
+			__left="$__left${__right%%$__find*}$__replace"
+			__right="${__right#*$__find}"
+			continue
+		esac
+		break
+	done
+	__left="$__left${__right#*$__find}"
+	if [ "$__var_to_set" ]; then
+		setvar "$__var_to_set" "$__left"
+	else
+		echo "$__left"
+	fi
+}
+
+############################################################ MAIN
+
+[ $# -gt 0 ] || f_usage
+
+while getopts aABDFhLMpsVZ flag; do
+	case "$flag" in
+	a)
+		SHOW_ARC=1
+		SHOW_DMU=1
+		SHOW_FREEBSD=1
+		SHOW_L2ARC=1
+		SHOW_MEMORY=1
+		SHOW_TUNABLES=1
+		SHOW_VDEV=1
+		SHOW_ZFS=1
+		;;
+	A) SHOW_ARC=1 ;;
+	B) SHOW_BYTES=1 ;;
+	D) SHOW_VDEV=1 ;;
+	F) SHOW_FREEBSD=1 ;;
+	L) SHOW_L2ARC=1 ;;
+	M) SHOW_MEMORY=1 ;;
+	p) SHOW_ZFS=1 ;;
+	s) SHOW_TUNABLES=1 ;;
+	V)
+		echo "${0##*/} version $VERSION"
+		exit $SUCCESS
+		;;
+	Z) SHOW_DMU=1 ;;
+	h|\?) f_usage # Not reached
+	esac
+done
+shift $(( $OPTIND - 1 ))
+
+#
+# Show usage (and exit) unless at-least one action-flag is given
+#
+[ "$SHOW_ARC" -o \
+  "$SHOW_DMU" -o \
+  "$SHOW_FREEBSD" -o \
+  "$SHOW_L2ARC" -o \
+  "$SHOW_MEMORY" -o \
+  "$SHOW_TUNABLES" -o \
+  "$SHOW_VDEV" -o \
+  "$SHOW_ZFS" -o \
+"" ] || f_usage
+
+#
+# System Information / FreeBSD
+#
+f_hline
+f_sysctl2sh $SYSCTL_NUMERIC_MIBS
+for mib in $SYSCTL_NUMERIC_MIBS; do
+	f_replaceall "$mib" "[^A-Za-z_]" _ _mib
+	eval : \${$_mib:=0}
+done
+ktext=$( kldstat | awk '
+	BEGIN { total = 0 }
+	NR > 1 { total += sprintf("%u", "0x" $4) }
+	END { print total }
+' )
+kdata=$( vmstat -m | awk '
+	BEGIN { total = 0 }
+	match($0, /[[:space:]][[:digit:]]+K/) {
+		m = substr($0, RSTART + 1, RLENGTH - 1)
+		if (sub(/K$/, "", m)) m = m * 1024
+		total += m
+	}
+	END { print total }
+' )
+kmem=$(( $ktext + $kdata ))
+f_perc $ktext / $kmem ktext_perc
+f_perc $kdata / $kmem kdata_perc
+
+#
+# Print Report Header
+#
+printf "ZFS Subsystem Report\t\t\t\t%s\n" "$( date +%c )"
+
+#
+# Process -F argument
+#
+if [ "$SHOW_FREEBSD" ]; then
+	f_hline
+	echo System Information:
+	echo
+	printf "\tKernel Version:\t\t\t\t%d (osreldate)\n" $kern_osreldate
+	printf "\tHardware Platform:\t\t\t%s\n" "$( uname -m )"
+	printf "\tProcessor Architecture:\t\t\t%s\n" "$( uname -p )"
+	echo
+	uname -v | awk '{sub(/@.*/,""); print}'
+	uptime
+fi
+
+#
+# Process -M argument 
+#
+if [ "$SHOW_MEMORY" ]; then
+	f_hline
+	echo System Memory Statistics:
+	f_convert_bytes $hw_physmem _hw_physmem
+	f_convert_bytes $kdata      _kdata
+	f_convert_bytes $kmem       _kmem
+	f_convert_bytes $ktext      _ktext
+	printf "\tPhysical Memory:\t\t\t%s\n" $_hw_physmem
+	printf "\tKernel Memory:\t\t\t\t%s\n" $_kmem
+	printf "\tDATA:\t\t\t\t%0.2f%%\t%s\n" $kdata_perc $_kdata
+	printf "\tTEXT:\t\t\t\t%0.2f%%\t%s\n" $ktext_perc $_ktext
+fi
+
+#
+# Process -p argument (`p' for `pool')
+#
+if [ "$SHOW_ZFS" ]; then
+	f_hline
+	echo ZFS pool information:
+	printf "\tStorage pool Version (spa):\t\t%d\n" $vfs_zfs_version_spa
+	printf "\tFilesystem Version (zpl):\t\t%d\n" $vfs_zfs_version_zpl
+	throttle=$kstat_zfs_misc_arcstats_memory_throttle_count
+	[ $throttle -gt 0 ] &&
+		printf "\tMemory Throttle Count:\t\t\t%d\t[I]\n" $throttle
+fi
+
+#
+# Process -A argument
+#
+if [ "$SHOW_ARC" ]; then
+	### ARC Misc. ###
+	     deleted=$kstat_zfs_misc_arcstats_deleted
+	  evict_skip=$kstat_zfs_misc_arcstats_evict_skip
+	  mutex_miss=$kstat_zfs_misc_arcstats_mutex_miss
+	recycle_miss=$kstat_zfs_misc_arcstats_recycle_miss
+
+	f_hline
+	echo ARC Misc:
+	printf "\tDeleted:\t\t\t\t%d\n" $deleted
+	printf "\tRecycle Misses:\t\t\t\t%d\n" $recycle_miss
+	printf "\tMutex Misses:\t\t\t\t%d\n" $mutex_miss
+	printf "\tEvict Skips:\t\t\t\t%d\n" $mutex_miss
+	echo
+
+	### ARC Sizing ###
+	       arc_size=$kstat_zfs_misc_arcstats_size
+	       mru_size=$kstat_zfs_misc_arcstats_p
+	target_max_size=$kstat_zfs_misc_arcstats_c_max
+	target_min_size=$kstat_zfs_misc_arcstats_c_min
+	    target_size=$kstat_zfs_misc_arcstats_c
+
+	target_size_ratio=$(( $target_max_size / $target_min_size ))
+	f_perc $target_size / $target_max_size target_size_perc
+	f_perc $target_min_size / $target_max_size target_size_min_perc
+	f_perc $arc_size / $target_max_size arc_size_perc
+
+	echo ARC Size:
+	f_convert_bytes $arc_size        _arc_size
+	f_convert_bytes $target_max_size _target_max_size
+	f_convert_bytes $target_min_size _target_min_size
+	f_convert_bytes $target_size     _target_size
+	printf "\tCurrent Size (arcsize):\t\t%0.2f%%\t%s\n" \
+		$arc_size_perc $_arc_size
+	printf "\tTarget Size (Adaptive, c):\t%0.2f%%\t%s\n" \
+		$target_size_perc $_target_size
+	printf "\tMin Size (Hard Limit, c_min):\t%0.2f%%\t%s\n" \
+		$target_size_min_perc $_target_min_size
+	printf "\tMax Size (High Water, c_max):\t~%d:1\t%s\n" \
+		$target_size_ratio $_target_max_size
+
+	echo
+	echo ARC Size Breakdown:
+	if [ $arc_size -gt $target_size ]; then
+		mfu_size=$(( $arc_size - $mru_size ))
+		f_convert_bytes $mfu_size _mfu_size
+		f_convert_bytes $mru_size _mru_size
+		f_perc $mfu_size / $arc_size mfu_perc
+		f_perc $mru_size / $arc_size mru_perc
+		printf "\tRecently Used Cache Size (p):\t%0.2f%%\t%s\n" \
+			$mru_perc $_mru_size
+		printf \
+		   "\tFrequently Used Cache Size (arcsize-p):\t%0.2f%%\t%s\n" \
+		   $mfu_perc $_mfu_size
+	fi
+
+	if [ $arc_size -lt $target_size ]; then
+		mfu_size=$(( $target_size - $mru_size ))
+		f_convert_bytes $mfu_size _mfu_size
+		f_convert_bytes $mru_size _mru_size
+		f_perc $mfu_size / $target_size mfu_perc
+		f_perc $mru_size / $target_size mru_perc
+		printf "\tRecently Used Cache Size (p):\t%0.2f%%\t%s\n" \
+			$mru_perc $_mru_size
+		printf "\tFreq. Used Cache Size (c-p):\t%0.2f%%\t%s\n" \
+			$mfu_perc $_mfu_size
+	fi
+	echo
+
+	### ARC Hash ###
+	      hash_chains=$kstat_zfs_misc_arcstats_hash_chains
+	  hash_chains_max=$kstat_zfs_misc_arcstats_hash_chains_max
+	  hash_collisions=$kstat_zfs_misc_arcstats_hash_collisions
+	    hash_elements=$kstat_zfs_misc_arcstats_hash_elements
+	hash_elements_max=$kstat_zfs_misc_arcstats_hash_elements_max
+
+	f_perc $hash_elements / $hash_elements_max hash_elements_perc
+
+	echo ARC Hash Breakdown:
+	printf "\tElements Max:\t\t\t\t%d\n" $hash_elements_max
+	printf "\tElements Current:\t\t%0.2f%%\t%d\n" \
+		$hash_elements_perc $hash_elements
+	printf "\tCollisions:\t\t\t\t%d\n" $hash_collisions
+	printf "\tChain Max:\t\t\t\t%d\n" $hash_chain_max
+	printf "\tChains:\t\t\t\t\t%d\n" $hash_chains
+	echo
+
+	### ARC L2 Eviction statistics
+	    evict_l2_cached=$kstat_zfs_misc_arcstats_evict_l2_cached
+	  evict_l2_eligible=$kstat_zfs_misc_arcstats_evict_l2_eligible
+	evict_l2_ineligible=$kstat_zfs_misc_arcstats_evict_l2_ineligible
+
+	evict_l2_total=$(( $evict_l2_eligible + $evict_l2_ineligible ))
+	f_perc $evict_l2_eligible / $evict_l2_total evict_l2_eligible_perc
+	f_perc $evict_l2_ineligible / $evict_l2_total evict_l2_ineligible_perc
+
+	echo ARC Eviction Statistics:
+	printf "\tEvicts Total:\t\t\t\t%d\n" $evict_l2_total
+	printf "\tEvicts Eligible for L2:\t\t%0.2f%%\t%d\n" \
+		$evict_l2_eligible_perc $evict_l2_eligible
+	printf "\tEvicts Ineligible for L2:\t%0.2f%%\t%d\n" \
+		$evict_l2_ineligible_perc $evict_l2_ineligible
+	printf "\tEvicts Cached to L2:\t\t\t%d\n" $evict_l2_cached
+	echo
+
+	### ARC Efficency ###
+	           arc_hits=$kstat_zfs_misc_arcstats_hits
+	           arc_miss=$kstat_zfs_misc_arcstats_misses
+	   demand_data_hits=$kstat_zfs_misc_arcstats_demand_data_hits
+	   demand_data_miss=$kstat_zfs_misc_arcstats_demand_data_misses
+	  demand_mdata_hits=$kstat_zfs_misc_arcstats_demand_metadata_hits
+	  demand_mdata_miss=$kstat_zfs_misc_arcstats_demand_metadata_misses
+	     mfu_ghost_hits=$kstat_zfs_misc_arcstats_mfu_ghost_hits
+	           mfu_hits=$kstat_zfs_misc_arcstats_mfu_hits
+	     mru_ghost_hits=$kstat_zfs_misc_arcstats_mru_ghost_hits
+	           mru_hits=$kstat_zfs_misc_arcstats_mru_hits
+	 prefetch_data_hits=$kstat_zfs_misc_arcstats_prefetch_data_hits
+	 prefetch_data_miss=$kstat_zfs_misc_arcstats_prefetch_data_misses
+	prefetch_mdata_hits=$kstat_zfs_misc_arcstats_prefetch_metadata_hits
+	prefetch_mdata_miss=$kstat_zfs_misc_arcstats_prefetch_metadata_misses
+
+	arc_accesses_total=$(( $arc_hits + $arc_miss ))
+	f_perc $arc_hits / $arc_accesses_total arc_hit_perc
+	f_perc $arc_miss / $arc_accesses_total arc_miss_perc
+	anon_hits=$(( $arc_hits - (
+		$mfu_hits + $mru_hits + $mfu_ghost_hits + $mru_ghost_hits
+	) ))
+	real_hits=$(( $mfu_hits + $mru_hits ))
+	f_perc $real_hits / $arc_accesses_total real_hits_perc
+
+	### These should be based on TOTAL HITS ($arc_hits) ###
+	f_perc $anon_hits / $arc_hits anon_hits_perc
+	f_perc $mfu_hits / $arc_hits mfu_hits_perc
+	f_perc $mru_hits / $arc_hits mru_hits_perc
+	f_perc $mfu_ghost_hits / $arc_hits mfu_ghost_hits_perc
+	f_perc $mru_ghost_hits / $arc_hits mru_ghost_hits_perc
+
+	f_perc $demand_data_hits / $arc_hits demand_data_hits_perc
+	f_perc $demand_mdata_hits / $arc_hits demand_mdata_hits_perc
+	f_perc $prefetch_data_hits / $arc_hits prefetch_data_hits_perc
+	f_perc $prefetch_mdata_hits / $arc_hits prefetch_mdata_hits_perc
+
+	f_perc $demand_data_miss / $arc_miss demand_data_miss_perc
+	f_perc $demand_mdata_miss / $arc_miss demand_mdata_miss_perc
+	f_perc $prefetch_data_miss / $arc_miss prefetch_data_miss_perc
+	f_perc $prefetch_mdata_miss / $arc_miss prefetch_mdata_miss_perc
+
+	prefetch_data_perc=00
+	prefetch_data_total=$(( $prefetch_data_hits + $prefetch_data_miss ))
+	[ $prefetch_data_total -gt 0 ] && f_perc \
+		$prefetch_data_hits / $prefetch_data_total prefetch_data_perc
+
+	demand_data_total=$(( $demand_data_hits + $demand_data_miss ))
+	f_perc $demand_data_hits / $demand_data_total demand_data_perc
+
+	echo ARC Efficiency
+	printf "\tCache Access Total:\t\t\t%d\n" $arc_accesses_total
+	printf "\tCache Hit Ratio:\t\t%0.2f%%\t%d\n" $arc_hit_perc $arc_hits
+	printf "\tCache Miss Ratio:\t\t%0.2f%%\t%d\n" $arc_miss_perc $arc_miss
+	printf "\tActual Hit Ratio:\t\t%0.2f%%\t%d\n" \
+		$real_hits_perc $real_hits
+	echo
+	printf "\tData Demand Efficiency:\t\t%0.2f%%\n" $demand_data_perc
+
+	[ $prefetch_data_total -gt 0 ] && printf \
+		"\tData Prefetch Efficiency:\t%0.2f%%\n" $prefetch_data_perc
+	echo
+
+	printf "\tCACHE HITS BY CACHE LIST:\n"
+	[ $anon_hits -gt 0 ] && printf \
+		"\t  Anonymously Used:\t\t%0.2f%%\t%d\n" \
+		$anon_hits_perc $anon_hits
+
+	printf "\t  Most Recently Used (mru):\t%0.2f%%\t%d\n" \
+		$mru_hits_perc $mru_hits
+	printf "\t  Most Frequently Used (mfu):\t%0.2f%%\t%d\n" \
+		$mfu_hits_perc $mfu_hits
+	printf "\t  MRU Ghost (mru_ghost):\t%0.2f%%\t%d\n" \
+		$mru_ghost_hits_perc $mru_ghost_hits
+	printf "\t  MFU Ghost (mfu_ghost):\t%0.2f%%\t%d\n" \
+		$mfu_ghost_hits_perc $mfu_ghost_hits
+
+	echo
+	printf "\tCACHE HITS BY DATA TYPE:\n"
+	printf "\t  Demand Data:\t\t\t%0.2f%%\t%d\n" \
+		$demand_data_hits_perc $demand_data_hits
+	printf "\t  Prefetch Data:\t\t%0.2f%%\t%d\n" \
+		$prefetch_data_hits_perc $prefetch_data_hits
+	printf "\t  Demand Metadata:\t\t%0.2f%%\t%d\n" \
+		$demand_mdata_hits_perc $demand_mdata_hits
+	printf "\t  Prefetch Metadata:\t\t%0.2f%%\t%d\n" \
+		$prefetch_mdata_hits_perc $prefetch_mdata_hits
+
+	echo
+	printf "\tCACHE MISSES BY DATA TYPE:\n"
+	printf "\t  Demand Data:\t\t\t%0.2f%%\t%d\n" \
+		$demand_data_miss_perc $demand_data_miss
+	printf "\t  Prefetch Data:\t\t%0.2f%%\t%d\n" \
+		$prefetch_data_miss_perc $prefetch_data_miss
+	printf "\t  Demand Metadata:\t\t%0.2f%%\t%d\n" \
+		$demand_mdata_miss_perc $demand_mdata_miss
+	printf "\t  Prefetch Metadata:\t\t%0.2f%%\t%d\n" \
+		$prefetch_mdata_miss_perc $prefetch_mdata_miss
+fi
+
+#
+# Process -L argument
+#
+if [ "$SHOW_L2ARC" ]; then
+	### L2 ARC Stats Sysctl's ###
+	    l2_abort_lowmem=$kstat_zfs_misc_arcstats_l2_abort_lowmem
+	       l2_cksum_bad=$kstat_zfs_misc_arcstats_l2_cksum_bad
+	l2_evict_lock_retry=$kstat_zfs_misc_arcstats_l2_evict_lock_retry
+	   l2_evict_reading=$kstat_zfs_misc_arcstats_l2_evict_reading
+	           l2_feeds=$kstat_zfs_misc_arcstats_l2_feeds
+	   l2_free_on_write=$kstat_zfs_misc_arcstats_l2_free_on_write
+	        l2_hdr_size=$kstat_zfs_misc_arcstats_l2_hdr_size
+	            l2_hits=$kstat_zfs_misc_arcstats_l2_hits
+	        l2_io_error=$kstat_zfs_misc_arcstats_l2_io_error
+	            l2_miss=$kstat_zfs_misc_arcstats_l2_misses
+	      l2_read_bytes=$kstat_zfs_misc_arcstats_l2_read_bytes
+	        l2_rw_clash=$kstat_zfs_misc_arcstats_l2_rw_clash
+	            l2_size=$kstat_zfs_misc_arcstats_l2_size
+	     l2_write_bytes=$kstat_zfs_misc_arcstats_l2_write_bytes
+	     l2_writes_done=$kstat_zfs_misc_arcstats_l2_writes_done
+	    l2_writes_error=$kstat_zfs_misc_arcstats_l2_writes_error
+	 l2_writes_hdr_miss=$kstat_zfs_misc_arcstats_l2_writes_hdr_miss
+	     l2_writes_sent=$kstat_zfs_misc_arcstats_l2_writes_sent
+
+	l2_access_total=$(( $l2_hits + $l2_miss ))
+
+	### L2 ARC ###
+	if [ $l2_size -gt 0 -a $l2_access_total -gt 0 ]; then
+		### L2 ARC Stats Calculations ###
+		f_perc $l2_hdr_size / $l2_size l2_hdr_size_perc
+		f_perc $l2_hits / $l2_access_total l2_hits_perc
+		f_perc $l2_miss / $l2_access_total l2_miss_perc
+		f_perc $l2_writes_done / $l2_writes_sent l2_writes_done_perc
+		f_perc $l2_writes_error / $l2_writes_sent l2_writes_error_perc
+
+		f_hline
+		echo L2 ARC Summary:
+		printf "\tLow Memory Aborts:\t\t\t%d\n" $l2_abort_lowmem
+		[ $l2_cksum_bad -gt 0 ] && printf \
+			"\tBad Checksums:\t\t\t\t%d\t[W]\n" $l2_cksum_bad
+		[ $l2_io_error -gt 0 ] && printf \
+			"\tIO Errors:\t\t\t\t%d\t[E]\n" $l2_io_error
+		printf "\tR/W Clashes:\t\t\t\t%d\n" $l2_rw_clash
+		printf "\tFree on Write:\t\t\t\t%d\n" $l2_free_on_write
+		echo
+
+		echo L2 ARC Size:
+		f_convert_bytes $l2_size _l2_size
+		f_convert_bytes $l2_hdr_size _l2_hdr_size
+		printf "\tCurrent Size: (Adaptive)\t\t%s\n" $_l2_size
+		printf "\tHeader Size:\t\t\t%0.2f%%\t%s\n" \
+			$l2_hdr_size_perc $_l2_hdr_size
+		echo
+
+		if [ $(( $l2_evict_lock_retry + $l2_evict_reading )) -gt 0 ]
+		then
+			echo L2 ARC Evicts:
+			printf "\tLock Retries:\t\t\t\t%d\n" \
+				$l2_evict_lock_retry
+			printf "\tUpon Reading:\t\t\t\t%d\n" \
+				$l2_evict_reading
+			echo
+		fi
+		echo L2 ARC Read/Write Activity:
+		f_convert_bytes $l2_write_bytes _l2_write_bytes
+		f_convert_bytes $l2_read_bytes _l2_read_bytes
+		printf "\tBytes Written:\t\t\t\t%s\n" $_l2_write_bytes
+		printf "\tBytes Read:\t\t\t\t%s\n" $_l2_read_bytes
+		echo
+		echo L2 ARC Breakdown:
+		printf "\tAccess Total:\t\t\t\t%d\n" $l2_access_total
+		printf "\tHit Ratio:\t\t\t%0.2f%%\t%d\n" $l2_hits_perc $l2_hits
+		printf "\tMiss Ratio:\t\t\t%0.2f%%\t%d\n" \
+			$l2_miss_perc $l2_miss
+		printf "\tFeeds:\t\t\t\t\t%d\n" $l2_feeds
+		echo
+
+		printf "\tWRITES:\n"
+		if [ $l2_writes_done -ne $l2_writes_sent ]; then
+			printf "\t  Sent Total:\t\t\t\t%d\n" $l2_writes_sent
+			printf "\t  Done Ratio:\t\t\t%0.2f%%\t%d\n" \
+				$l2_writes_done_perc $l2_writes_done
+			printf "\t  Error Ratio:\t\t\t%0.2f%%\t%d\t[E]\n" \
+				$l2_writes_error_perc $l2_writes_error
+		else
+			printf "\t  Sent Total:\t\t\t%0.2f%\t%d\n" 100 \
+				$l2_writes_sent
+		fi
+	fi
+fi
+
+#
+# Process -D argument (`D' for `Device(s)')
+#
+if [ "$SHOW_VDEV" ]; then
+	### VDEV Cache Stats ###
+	vdev_cache_delegations=$kstat_zfs_misc_vdev_cache_stats_delegations
+	       vdev_cache_hits=$kstat_zfs_misc_vdev_cache_stats_hits
+	       vdev_cache_miss=$kstat_zfs_misc_vdev_cache_stats_misses
+	vdev_cache_total=$(( $vdev_cache_miss + $vdev_cache_hits ))
+	f_perc $vdev_cache_hits / $vdev_cache_total vdev_cache_hits_perc
+	f_perc $vdev_cache_miss / $vdev_cache_total vdev_cache_miss_perc
+	f_perc $vdev_cache_delegations / $vdev_cache_total \
+		vdev_cache_delegations_perc
+
+	f_hline
+	echo VDEV Cache Summary:
+	printf "\tAccess Total:\t\t\t\t%d\n" $vdev_cache_total
+	printf "\tHits Ratio:\t\t\t%0.2f%%\t%d\n" \
+		$vdev_cache_hits_perc $vdev_cache_hits
+	printf "\tMiss Ratio:\t\t\t%0.2f%%\t%d\n" \
+		$vdev_cache_miss_perc $vdev_cache_miss
+	printf "\tDelegations:\t\t\t\t%d\n" $vdev_cache_delegations
+fi
+
+#
+# Process -Z argument
+#
+if [ "$SHOW_DMU" ]; then
+	### DMU Stats Sysctl's ###
+	   zfetch_bogus_streams=$kstat_zfs_misc_zfetchstats_bogus_streams
+	   zfetch_colinear_hits=$kstat_zfs_misc_zfetchstats_colinear_hits
+	   zfetch_colinear_miss=$kstat_zfs_misc_zfetchstats_colinear_misses
+	            zfetch_hits=$kstat_zfs_misc_zfetchstats_hits
+	            zfetch_miss=$kstat_zfs_misc_zfetchstats_misses
+	 zfetch_reclaim_failure=$kstat_zfs_misc_zfetchstats_reclaim_failures
+	 zfetch_reclaim_success=$kstat_zfs_misc_zfetchstats_reclaim_successes
+	zfetch_streams_noresets=$kstat_zfs_misc_zfetchstats_streams_noresets
+	  zfetch_streams_resets=$kstat_zfs_misc_zfetchstats_streams_resets
+	     zfetch_stride_hits=$kstat_zfs_misc_zfetchstats_stride_hits
+	     zfetch_stride_miss=$kstat_zfs_misc_zfetchstats_stride_misses
+
+	zfetch_access_total=$(( $zfetch_hits + $zfetch_miss ))
+	zfetch_colinear_total=$((
+		$zfetch_colinear_hits + $zfetch_colinear_miss
+	))
+	zfetch_stride_total=$(( $zfetch_stride_hits + $zfetch_stride_miss ))
+
+	if [ $zfetch_access_total -gt 0 ]; then
+		f_perc $zfetch_hits / $zfetch_access_total zfetch_hits_perc
+		f_perc $zfetch_miss / $zfetch_access_total zfetch_miss_perc
+		f_perc $zfetch_colinear_hits / $zfetch_colinear_total \
+			zfetch_colinear_hits_perc
+		f_perc $zfetch_colinear_miss / $zfetch_colinear_total \
+			zfetch_colinear_miss_perc
+		f_perc $zfetch_stride_hits / $zfetch_stride_total \
+			zfetch_stride_hits_perc
+		f_perc $zfetch_stride_miss / $zfetch_stride_total \
+			zfetch_stride_miss_perc
+
+		f_hline
+		echo "File-Level Prefetch Stats (DMU):"
+		echo
+		echo DMU Efficiency:
+		printf "\tAccess Total:\t\t\t\t%d\n" $zfetch_access_total
+		printf "\tHit Ratio:\t\t\t%0.2f%%\t%d\n" \
+			$zfetch_hits_perc $zfetch_hits
+		printf "\tMiss Ratio:\t\t\t%0.2f%%\t%d\n" \
+			$zfetch_miss_perc $zfetch_miss
+		echo
+		printf "\tColinear Access Total:\t\t\t%d\n" \
+			$zfetch_colinear_total
+		printf "\tColinear Hit Ratio:\t\t%0.2f%%\t%d\n" \
+			$zfetch_colinear_hits_perc $zfetch_colinear_hits
+		printf "\tColinear Miss Ratio:\t\t%0.2f%%\t%d\n" \
+			$zfetch_colinear_miss_perc $zfetch_colinear_miss
+		echo
+		printf "\tStride Access Total:\t\t\t%d\n" $zfetch_stride_total
+		printf "\tStride Hit Ratio:\t\t%0.2f%%\t%d\n" \
+			$zfetch_stride_hits_perc $zfetch_stride_hits
+		printf "\tStride Miss Ratio:\t\t%0.2f%%\t%d\n" \
+			$zfetch_stride_miss_perc $zfetch_stride_miss
+		echo
+
+		echo DMU misc:
+		printf "\tReclaim successes:\t\t\t%d\n" $zfetch_reclaim_success
+		printf "\tReclaim failures:\t\t\t%d\n" $zfetch_reclaim_failure
+		printf "\tStream resets:\t\t\t\t%d\n" $zfetch_streams_resets
+		printf "\tStream noresets:\t\t\t%d\n" $zfetch_streams_noresets
+		printf "\tBogus streams:\t\t\t\t%d\n" $zfetch_bogus_streams
+	fi
+fi
+
+#
+# Process -s argument (`s' for `sysctl')
+#
+if [ "$SHOW_TUNABLES" ]; then
+	### Tunables FreeBSD  ###
+	f_hline
+	echo "ZFS Tunable (sysctl):"
+	sysctl -e \
+		kern.maxusers		\
+		vfs.zfs			\
+		vm.kmem_size		\
+		vm.kmem_size_scale	\
+		vm.kmem_size_min	\
+		vm.kmem_size_max	\
+	| awk '{print "\t" $0}'
+fi
+
+#
+# End Report
+#
+f_hline
+
+################################################################################
+# END
+################################################################################
+#
+# $Header: /cvsroot/druidbsd/pkgbase/freebsd/RELENG_8_3_AMD64/sysutils/zfs-stats-lite/src/bin/zfs-stats,v 1.1 2014/11/12 22:42:15 devinteske Exp $
+#
+################################################################################
